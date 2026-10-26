@@ -1,0 +1,740 @@
+// =====================================================
+// 1. CARGAR ARCHIVO
+// =====================================================
+
+Source =
+    Excel.Workbook(
+        File.Contents(
+            "C:\Users\capatino\OneDrive - Servicio Nacional de Aprendizaje\Equipo ASTIN-DESAROLLOS POWER-BI - RAPS ASTIN 2026\Inasistencias.xls"
+        ),
+        null,
+        true
+    ),
+
+// =====================================================
+// 2. SELECCIONAR PRIMERA HOJA
+// =====================================================
+
+Hoja1 =
+    Source{0}[Data],
+
+// =====================================================
+// 3. ELIMINAR PRIMERA FILA
+// =====================================================
+
+#"Filas quitadas" =
+    Table.Skip(
+        Hoja1,
+        1
+    ),
+
+// =====================================================
+// 4. PROMOVER ENCABEZADOS
+// =====================================================
+
+#"Encabezados promovidos" =
+    Table.PromoteHeaders(
+        #"Filas quitadas",
+        [PromoteAllScalars = true]
+    ),
+
+// =====================================================
+// 5. ELIMINAR COLUMNAS COMPLETAMENTE VACÍAS
+// =====================================================
+
+#"Columnas vacías eliminadas" =
+    Table.SelectColumns(
+        #"Encabezados promovidos",
+        List.Select(
+            Table.ColumnNames(
+                #"Encabezados promovidos"
+            ),
+            each
+                List.NonNullCount(
+                    Table.Column(
+                        #"Encabezados promovidos",
+                        _
+                    )
+                ) > 0
+        )
+    ),
+
+// =====================================================
+// 6. LIMPIAR NOMBRES DE COLUMNAS
+// =====================================================
+
+#"Nombres limpios" =
+    Table.TransformColumnNames(
+        #"Columnas vacías eliminadas",
+        Text.Trim
+    ),
+
+// =====================================================
+// 7. FUNCIÓN PARA IDENTIFICAR UNA FICHA
+// =====================================================
+
+EsFicha =
+    (Valor as any) as logical =>
+        let
+            Texto =
+                try Text.Trim(
+                    Text.From(Valor)
+                )
+                otherwise null,
+
+            ParteNumero =
+                if Texto <> null
+                and Text.Contains(
+                    Texto,
+                    " - "
+                )
+                then
+                    try
+                        Text.BeforeDelimiter(
+                            Texto,
+                            " - "
+                        )
+                    otherwise null
+                else
+                    null,
+
+            SoloNumeros =
+                if ParteNumero <> null
+                then
+                    Text.Select(
+                        ParteNumero,
+                        {"0".."9"}
+                    )
+                else
+                    "",
+
+            Resultado =
+                Texto <> null
+                and Text.Contains(
+                    Texto,
+                    " - "
+                )
+                and Text.Length(
+                    SoloNumeros
+                ) = 7
+        in
+            Resultado,
+
+// =====================================================
+// 8. FUNCIÓN PARA IDENTIFICAR DOCUMENTOS
+// =====================================================
+
+EsIdentificacion =
+    (Valor as any) as logical =>
+        let
+            Texto =
+                try Text.Upper(
+                    Text.Trim(
+                        Text.From(Valor)
+                    )
+                )
+                otherwise null,
+
+            Prefijo =
+                if Texto <> null
+                and Text.Contains(
+                    Texto,
+                    " - "
+                )
+                then
+                    try
+                        Text.BeforeDelimiter(
+                            Texto,
+                            " - "
+                        )
+                    otherwise null
+                else
+                    null,
+
+            ParteNumero =
+                if Texto <> null
+                and Text.Contains(
+                    Texto,
+                    " - "
+                )
+                then
+                    try
+                        Text.AfterDelimiter(
+                            Texto,
+                            " - "
+                        )
+                    otherwise null
+                else
+                    null,
+
+            SoloNumeros =
+                if ParteNumero <> null
+                then
+                    Text.Select(
+                        ParteNumero,
+                        {"0".."9"}
+                    )
+                else
+                    "",
+
+            PrefijoValido =
+                List.Contains(
+                    {
+                        "CC",
+                        "TI",
+                        "CE",
+                        "PPT"
+                    },
+                    Prefijo
+                ),
+
+            Resultado =
+                Texto <> null
+                and PrefijoValido
+                and Text.Length(
+                    SoloNumeros
+                ) >= 6
+        in
+            Resultado,
+
+// =====================================================
+// 9. FUNCIÓN PARA IDENTIFICAR FECHAS
+// =====================================================
+
+EsFecha =
+    (Valor as any) as logical =>
+        Value.Is(
+            Valor,
+            type date
+        )
+        or
+        Value.Is(
+            Valor,
+            type datetime
+        )
+        or
+        Value.Is(
+            Valor,
+            type datetimezone
+        ),
+
+// =====================================================
+// 10. FUNCIÓN PRINCIPAL DE NORMALIZACIÓN
+//
+// ESTA ES LA PARTE MÁS IMPORTANTE.
+//
+// No importa si Sofía Plus coloca:
+//
+// FICHA       → columna A
+// INSTRUCTOR  → columna D
+// FECHAS      → columnas I/J
+// HORAS       → columna L
+//
+// o:
+//
+// FICHA       → columna C
+// INSTRUCTOR  → columna F
+// FECHAS      → columnas N/O
+// HORAS       → columna P
+//
+// La función busca los datos por su contenido.
+// =====================================================
+
+NormalizarFila =
+    (Fila as record) as record =>
+        let
+
+            // -------------------------------------------------
+            // OBTENER TODOS LOS VALORES DE LA FILA
+            // -------------------------------------------------
+
+            Valores =
+                Record.FieldValues(
+                    Fila
+                ),
+
+            Posiciones =
+                List.Positions(
+                    Valores
+                ),
+
+            Textos =
+                List.Transform(
+                    Valores,
+                    each
+                        try
+                            Text.Trim(
+                                Text.From(_)
+                            )
+                        otherwise
+                            null
+                ),
+
+            // -------------------------------------------------
+            // BUSCAR FICHA
+            // -------------------------------------------------
+
+            PosicionesFicha =
+                List.Select(
+                    Posiciones,
+                    each
+                        EsFicha(
+                            Valores{_}
+                        )
+                ),
+
+            TextoFicha =
+                if List.Count(
+                    PosicionesFicha
+                ) > 0
+                then
+                    Textos{
+                        List.First(
+                            PosicionesFicha
+                        )
+                    }
+                else
+                    null,
+
+            FICHA =
+                if TextoFicha <> null
+                then
+                    Text.BeforeDelimiter(
+                        TextoFicha,
+                        " - "
+                    )
+                else
+                    null,
+
+            NOMBRE_FICHA =
+                if TextoFicha <> null
+                then
+                    Text.Trim(
+                        Text.AfterDelimiter(
+                            TextoFicha,
+                            " - "
+                        )
+                    )
+                else
+                    null,
+
+            // -------------------------------------------------
+            // BUSCAR IDENTIFICACIÓN DEL APRENDIZ
+            // -------------------------------------------------
+
+            PosicionesID =
+                List.Select(
+                    Posiciones,
+                    each
+                        EsIdentificacion(
+                            Valores{_}
+                        )
+                ),
+
+            PosicionID =
+                if List.Count(
+                    PosicionesID
+                ) > 0
+                then
+                    List.First(
+                        PosicionesID
+                    )
+                else
+                    null,
+
+            IDENTIFICACION_APRENDIZ =
+                if PosicionID <> null
+                then
+                    Textos{
+                        PosicionID
+                    }
+                else
+                    null,
+
+            // -------------------------------------------------
+            // BUSCAR INSTRUCTOR
+            //
+            // El instructor normalmente es el último texto
+            // válido situado antes de la identificación.
+            // -------------------------------------------------
+
+            PosicionesAnteriores =
+                if PosicionID <> null
+                then
+                    List.Select(
+                        Posiciones,
+                        each
+                            _ < PosicionID
+                            and
+                            Textos{_} <> null
+                            and
+                            not EsFicha(
+                                Valores{_}
+                            )
+                    )
+                else
+                    {},
+
+            INSTRUCTOR =
+                if List.Count(
+                    PosicionesAnteriores
+                ) > 0
+                then
+                    Textos{
+                        List.Last(
+                            PosicionesAnteriores
+                        )
+                    }
+                else
+                    null,
+
+            // -------------------------------------------------
+            // BUSCAR APRENDIZ
+            //
+            // Es el primer texto después de la identificación.
+            // -------------------------------------------------
+
+            PosicionesPosterioresID =
+                if PosicionID <> null
+                then
+                    List.Select(
+                        Posiciones,
+                        each
+                            _ > PosicionID
+                            and
+                            Textos{_} <> null
+                    )
+                else
+                    {},
+
+            APRENDIZ =
+                if List.Count(
+                    PosicionesPosterioresID
+                ) > 0
+                then
+                    Textos{
+                        List.First(
+                            PosicionesPosterioresID
+                        )
+                    }
+                else
+                    null,
+
+            // -------------------------------------------------
+            // BUSCAR TODAS LAS FECHAS
+            // -------------------------------------------------
+
+            PosicionesFecha =
+                List.Select(
+                    Posiciones,
+                    each
+                        EsFecha(
+                            Valores{_}
+                        )
+                ),
+
+            FECHA_INICIO =
+                if List.Count(
+                    PosicionesFecha
+                ) > 0
+                then
+                    try
+                        Date.From(
+                            Valores{
+                                List.First(
+                                    PosicionesFecha
+                                )
+                            }
+                        )
+                    otherwise
+                        null
+                else
+                    null,
+
+            FECHA_FIN =
+                if List.Count(
+                    PosicionesFecha
+                ) > 0
+                then
+                    try
+                        Date.From(
+                            Valores{
+                                List.Last(
+                                    PosicionesFecha
+                                )
+                            }
+                        )
+                    otherwise
+                        null
+                else
+                    null,
+
+            // -------------------------------------------------
+            // IDENTIFICAR LA POSICIÓN DE FECHA FIN
+            // -------------------------------------------------
+
+            PosicionFechaFin =
+                if List.Count(
+                    PosicionesFecha
+                ) > 0
+                then
+                    List.Last(
+                        PosicionesFecha
+                    )
+                else
+                    null,
+
+            // -------------------------------------------------
+            // BUSCAR HORAS
+            //
+            // Las horas se encuentran después de FECHA FIN.
+            // -------------------------------------------------
+
+            PosicionesHoras =
+                if PosicionFechaFin <> null
+                then
+                    List.Select(
+                        Posiciones,
+                        each
+                            _ > PosicionFechaFin
+                            and
+                            Value.Is(
+                                Valores{_},
+                                type number
+                            )
+                    )
+                else
+                    {},
+
+            CANT_HORAS =
+                if List.Count(
+                    PosicionesHoras
+                ) > 0
+                then
+                    try
+                        Number.From(
+                            Valores{
+                                List.First(
+                                    PosicionesHoras
+                                )
+                            }
+                        )
+                    otherwise
+                        null
+                else
+                    null,
+
+            // -------------------------------------------------
+            // BUSCAR JUSTIFICACIÓN
+            //
+            // Tomamos el último texto de la fila posterior
+            // al valor de horas.
+            // -------------------------------------------------
+
+            PosicionHoras =
+                if List.Count(
+                    PosicionesHoras
+                ) > 0
+                then
+                    List.First(
+                        PosicionesHoras
+                    )
+                else
+                    null,
+
+            PosicionesJustificacion =
+                if PosicionHoras <> null
+                then
+                    List.Select(
+                        Posiciones,
+                        each
+                            _ > PosicionHoras
+                            and
+                            Textos{_} <> null
+                    )
+                else
+                    {},
+
+            JUSTIFICACION =
+                if List.Count(
+                    PosicionesJustificacion
+                ) > 0
+                then
+                    Textos{
+                        List.Last(
+                            PosicionesJustificacion
+                        )
+                    }
+                else
+                    null,
+
+            // -------------------------------------------------
+            // CONTROL DE CALIDAD
+            // -------------------------------------------------
+
+            Problemas =
+                List.RemoveNulls(
+                    {
+                        if FICHA = null
+                        then
+                            "REVISAR FICHA"
+                        else
+                            null,
+
+                        if INSTRUCTOR = null
+                        then
+                            "REVISAR INSTRUCTOR"
+                        else
+                            null,
+
+                        if IDENTIFICACION_APRENDIZ = null
+                        then
+                            "REVISAR IDENTIFICACIÓN"
+                        else
+                            null,
+
+                        if APRENDIZ = null
+                        then
+                            "REVISAR APRENDIZ"
+                        else
+                            null,
+
+                        if FECHA_FIN = null
+                        then
+                            "REVISAR FECHA"
+                        else
+                            null,
+
+                        if CANT_HORAS = null
+                        then
+                            "REVISAR HORAS"
+                        else
+                            null
+                    }
+                ),
+
+            ESTADO_REGISTRO =
+                if List.Count(
+                    Problemas
+                ) = 0
+                then
+                    "OK"
+                else
+                    Text.Combine(
+                        Problemas,
+                        " | "
+                    )
+
+        in
+            [
+                FICHA = FICHA,
+                NOMBRE_FICHA = NOMBRE_FICHA,
+                INSTRUCTOR = INSTRUCTOR,
+                IDENTIFICACION_APRENDIZ =
+                    IDENTIFICACION_APRENDIZ,
+                APRENDIZ = APRENDIZ,
+                FECHA_INICIO = FECHA_INICIO,
+                FECHA_FIN = FECHA_FIN,
+                #"CANT. HORAS" = CANT_HORAS,
+                JUSTIFICACION = JUSTIFICACION,
+                ESTADO_REGISTRO = ESTADO_REGISTRO
+            ],
+
+// =====================================================
+// 11. APLICAR LA FUNCIÓN A TODAS LAS FILAS
+// =====================================================
+
+#"Filas normalizadas" =
+    Table.FromRecords(
+        List.Transform(
+            Table.ToRecords(
+                #"Nombres limpios"
+            ),
+            each
+                NormalizarFila(_)
+        )
+    ),
+
+// =====================================================
+// 12. TIPOS DE DATOS
+// =====================================================
+
+#"Tipos cambiados" =
+    Table.TransformColumnTypes(
+        #"Filas normalizadas",
+        {
+            {"FICHA", type text},
+            {"NOMBRE_FICHA", type text},
+            {"INSTRUCTOR", type text},
+            {"IDENTIFICACION_APRENDIZ", type text},
+            {"APRENDIZ", type text},
+            {"FECHA_INICIO", type date},
+            {"FECHA_FIN", type date},
+            {"CANT. HORAS", type number},
+            {"JUSTIFICACION", type text},
+            {"ESTADO_REGISTRO", type text}
+        }
+    ),
+
+// =====================================================
+// 13. AGREGAR FILA DE ORIGEN
+//
+// La primera fila de datos del XLS corresponde a la fila 3
+// de Excel: fila 1 = título, fila 2 = encabezados.
+// =====================================================
+
+#"FILA_ORIGEN agregada" =
+    Table.AddIndexColumn(
+        #"Tipos cambiados",
+        "FILA_ORIGEN",
+        3,
+        1,
+        Int64.Type
+    ),
+
+// =====================================================
+// 14. AGREGAR MES
+// =====================================================
+
+#"MES agregado" =
+    Table.AddColumn(
+        #"FILA_ORIGEN agregada",
+        "MES",
+        each
+            if [FECHA_FIN] <> null
+            then
+                Text.Upper(
+                    Date.MonthName(
+                        [FECHA_FIN],
+                        "es-ES"
+                    )
+                )
+            else
+                null,
+        type text
+    ),
+
+// =====================================================
+// 15. AGREGAR NÚMERO DE MES
+// =====================================================
+
+#"NUM_MES agregado" =
+    Table.AddColumn(
+        #"MES agregado",
+        "NUM_MES",
+        each
+            if [FECHA_FIN] <> null
+            then
+                Date.Month(
+                    [FECHA_FIN]
+                )
+            else
+                null,
+        Int64.Type
+    ),
+    #"Índice agregado" = Table.AddIndexColumn(#"NUM_MES agregado", "Índice", 1, 1, Int64.Type),
+    #"Columnas con nombre cambiado" = Table.RenameColumns(#"Índice agregado",{{"Índice", "Indice"}})
+
+in
+
+    #"Columnas con nombre cambiado"

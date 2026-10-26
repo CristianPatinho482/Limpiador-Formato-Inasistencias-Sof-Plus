@@ -1,0 +1,1 @@
+\# Carpetas temporales y registros del sistema/herramientas .copilot/ .local/ .gitconfig \*.log # Python y entornos virtuales \_\_pycache\_\_/ \*.pyc .venv/ venv/ env/ # Archivos de configuración de editor o SO .vscode/ Thumbs.db .DS\_Store
